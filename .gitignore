@@ -1,0 +1,11 @@
+# build output (build\obj\UAR15.res and build\gen\ carry the encrypted art and its key)
+build/
+tools/prep/bin/
+tools/prep/obj/
+
+# From the BONELAB Cold Weapon Pack export (third-party, personal use only) - never commit
+Assets/
+*.png
+*.glb
+*.gltf
+*.bin

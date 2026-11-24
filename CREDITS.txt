@@ -1,0 +1,13 @@
+UAR-15 for Geronimo - credits
+=============================
+
+3D model and textures
+  UAR-15 from the Cold Weapon Pack for BONELAB by Bonewar (itself built from third-party models),
+  redistributed in this plugin with permission. The art ships inside UAR15.dll, encrypted; don't extract
+  it or reuse it outside this plugin.
+
+Plugin
+  RemArrow - https://github.com/RemArrow
+  Runs on GML, the Geronimo Mod Loader: https://github.com/RemArrow/geronimo-mod-loader
+
+Not affiliated with or endorsed by Bonewar, Stress Level Zero or Dark Matter Studios.
