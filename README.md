@@ -62,6 +62,33 @@ the run if the GML Manager has it off.
 - Not tried in VR or in a two-player session.
 - The model has colour maps only. Normals are flat, and roughness comes from the colour map's brightness.
 
+## Fit, selector and shading fixes (0.1.4)
+
+From a VR player's report:
+
+- **Magazine, pistol grip and charging handle offsets.** The receiver fit matched the UAR-15's upper to the M4 mesh,
+  but the M4's interaction points sit about 1 cm behind the UAR-15's matching parts. The UAR-15's magwell walls
+  measure +1.0 cm, its charging handle latch +1.1 cm, its selector pivot +1.09 cm, and its grip +0.5 to +1.2 cm. So
+  the magazine stood behind the well, and the hands sat behind the grip and handle. The model now sits 1.0 cm further
+  back along the bore (`kFitShiftX`, under the player's `OffsetX`). Verified in game: the magazine now sits flush in
+  the well (`build/shots/uar_magwell.png`; the old fit is in `build/shots_prefit`).
+- **Fire selector inverted.** At rest the M4's selector lever points back, but the UAR-15's points forward, so
+  copying the M4's rotation left the UAR-15's lever 180 degrees off in every mode. It now turns 180 degrees about its
+  own axis first. Verified in game: back, down and forward for modes 0, 1 and 2, as the M4's.
+- **Shading:** see below. This also removes the light/dark split line down the barrel, which came from the tilted
+  normals shading the barrel's two mirrored texture halves in opposite directions.
+- **Colliders** are still the M4's (the game's receiver collision), as with the other AR-based plugins.
+
+### Shading
+
+In a lit room the UAR-15 looked silvery white from some angles and dark grey from others. GML builds the plugin's
+textures at runtime, and the engine always samples those as sRGB. The flat normal map then decoded as normals tilted
+about 50 degrees, and the roughness and metallic channels came out far lower than meant (roughness 0.55 read as 0.26).
+The result was a glossy surface lit from the wrong direction. The model now uses the engine's own flat normal map,
+and `toolsprep` stores the ORM channels sRGB-encoded so they decode to the intended values. Verified in game: the
+material instances sample `/Engine/EngineMaterials/FlatNormal`, the base colour is unchanged (50 dB PSNR against
+0.1.3) and only the lit shading differs. The test harness now also takes lit captures under a point light.
+
 ## Loadout fix (0.1.3)
 
 The game saves a stock M4A1 CQBR under the UAR-15's gun entry, because both guns share one receiver. 0.1.2 took

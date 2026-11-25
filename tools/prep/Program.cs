@@ -398,7 +398,9 @@ static class Textures {
                     r[x] = new Rgba32(B(ToSrgb(Math.Min(1f, ToLinear(p.R / 255f) * m.BaseColorFactor.X * gain))), B(ToSrgb(Math.Min(1f, ToLinear(p.G / 255f) * m.BaseColorFactor.Y * gain))),
                                       B(ToSrgb(Math.Min(1f, ToLinear(p.B / 255f) * m.BaseColorFactor.Z * gain))), 255);
                     float lum = (0.2126f * p.R + 0.7152f * p.G + 0.0722f * p.B) / 255f;
-                    o[x] = new Rgba32(255, B(Math.Clamp(baseRough - (lum - 0.2f) * 0.3f, 0.25f, 0.95f)), metallic, 255);
+                    // The plugin's runtime textures are always sampled as sRGB: store sRGB-encoded values so the
+                    // shader reads the linear roughness and metallic meant here (0.55 would otherwise read as 0.26).
+                    o[x] = new Rgba32(255, B(ToSrgb(Math.Clamp(baseRough - (lum - 0.2f) * 0.3f, 0.25f, 0.95f))), B(ToSrgb(metallic / 255f)), 255);
                 }
             }
         });

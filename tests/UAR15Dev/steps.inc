@@ -15,6 +15,93 @@ static void LogBones(const char* when) {
     Log("BONES [{}]{}", when, out);
 }
 
+
+static Object SpawnAt(const char* cls, Vec at) {
+    Params mk(Lib("KismetMathLibrary"), "MakeTransform");
+    mk.Set("Location", at).Set("Scale", Vec{1, 1, 1}).Call();
+    Params b(Lib("GameplayStatics"), "BeginDeferredActorSpawnFromClass");
+    b.SetObj("WorldContextObject", Object(API->WorldContext())).Set("ActorClass", FindClass(cls)).Set("CollisionHandlingOverride", (uint8_t)1);
+    std::memcpy(b.Ptr("SpawnTransform"), mk.Ptr("ReturnValue"), 0x60);
+    b.Call();
+    Object a = b.Return<GUObject*>();
+    if (!a) return a;
+    Params f(Lib("GameplayStatics"), "FinishSpawningActor");
+    f.SetObj("Actor", a);
+    std::memcpy(f.Ptr("SpawnTransform"), mk.Ptr("ReturnValue"), 0x60);
+    f.Call();
+    return a;
+}
+
+// The look of the gun beyond its base colour: world normals (flat-normal faces must shade smoothly, as the M4's do)
+// and the lit scene under a point light beside the camera (a glossy surface shows a small hard highlight).
+static void CaptureShading(const std::string& file, double cx) {
+    if (!s_light) {
+        s_light = SpawnAt("PointLight", {s_holdAt.x + cx, s_holdAt.y + 150, s_holdAt.z + 60});
+        if (Object lc = s_light ? s_light.GetObj("PointLightComponent") : Object()) {
+            Params mob(lc, "SetMobility"); mob.Set("NewMobility", (uint8_t)2).Call();
+            Params in(lc, "SetIntensity"); in.Set("NewIntensity", 20000.0f).Call();
+            Params ar(lc, "SetAttenuationRadius"); ar.Set("NewRadius", 1000.0f).Call();
+        }
+        Log("SHADING light {}", s_light.Name());
+    } else {
+        Params mv(s_light, "K2_SetActorLocation");
+        mv.Set("NewLocation", Vec{s_holdAt.x + cx, s_holdAt.y + 150, s_holdAt.z + 60}).Set("bSweep", false).Set("bTeleport", true).Call();
+    }
+    s_capSource = 6;
+    CaptureFrom(file + "_normal_right", {cx, 230, 10}, {cx, 0, 0});
+    CaptureFrom(file + "_normal_top", {cx, 20, 230}, {cx, 0, 0});
+    s_capSource = 2;
+    CaptureFrom(file + "_lit_right", {cx, 230, 10}, {cx, 0, 0});
+    CaptureFrom(file + "_lit_action", {0, 60, 3}, {0, 0, 0});
+    CaptureFrom(file + "_lit_barrel", {32, 28, 8}, {32, 0, 2});
+    CaptureFrom(file + "_lit_barrel_top", {32, 3, 30}, {32, 0, 2});
+    s_capSource = 7;
+    // where the hands and the magazine meet the gun: magwell and grip from the left, charging handle from above-behind
+    CaptureFrom(file + "_magwell", {0, -45, -5}, {0, 0, -5});
+    CaptureFrom(file + "_handle", {-22, -14, 14}, {-8, 0, 4});
+    Log("SHOT {} (normals, lit, close-ups)", file);
+}
+
+// What each UAR-15 material instance samples: its Normal and ORM textures and how the engine decodes them.
+static void LogMaterials(Object gun) {
+    auto parts = Components(gun, "DynamicMeshComponent");
+    if (parts.empty()) return;
+    Params nm(parts[0], "GetNumMaterials");
+    nm.Call();
+    int n = nm.Return<int32_t>();
+    for (int i = 0; i < n && i < 3; i++) {
+        Params gm(parts[0], "GetMaterial");
+        gm.Set("ElementIndex", (int32_t)i).Call();
+        Object mid = gm.Return<GUObject*>();
+        std::string out;
+        for (const char* p : {"Diffuse", "Normal", "ORM"}) {
+            Params tp(mid, "K2_GetTextureParameterValue");
+            *(uint64_t*)tp.Ptr("ParameterName") = API->MakeName(p);
+            tp.Call();
+            Object tex = tp.Return<GUObject*>();
+            out += std::format(" {}={} (SRGB {}, compression {})", p, tex ? tex.Path() : std::string("none"), tex ? tex.GetBool("SRGB") : false,
+                               tex ? (int)tex.Get<uint8_t>("CompressionSettings") : -1);
+        }
+        Log("MATERIAL slot {} {}:{}", i, mid.Name(), out);
+    }
+}
+
+static int CountOptics(Object gun, const char* when) {
+    int n = 0;
+    Params ga(gun, "GetAttachedActors");
+    ga.Set("bResetArray", true).Set("bRecursivelyIncludeAttachedActors", true).Call();
+    if (auto* arr = (GML_TArray*)ga.Ptr("OutActors"))
+        for (int i = 0; i < arr->Num; i++) {
+            Object a(((GUObject**)arr->Data)[i]);
+            if (!a.IsA("GunAttachment")) continue;
+            n++;
+            Vec l = ToActor(gun, ActorLocation(a));
+            Log("OPTIC [{}] on {}: {} at ({:.2f},{:.2f},{:.2f}) attached {}", when, gun.Name(), a.Name(), l.x, l.y, l.z, a.GetBool("bAttached"));
+        }
+    Log("OPTIC [{}] {} attachment(s) on {}; ACOG actors in the world: {}", when, n, gun.Name(), FindAllOf("ACOG_4x_C").size());
+    return n;
+}
+
 static int s_mode = 0;
 static Object s_uarActor;
 
@@ -72,6 +159,7 @@ static void Step() {
             DumpGun("stock M4");
             LogBones("stock M4 at rest");
             CaptureGun("m4", 8);
+            CaptureShading("m4", 8);
             s_holding = false;
             s_step = 10;
             return;
@@ -102,6 +190,8 @@ static void Step() {
             LogBones("UAR-15 at rest");
             CaptureGun("uar", 12);
             CaptureFrom("uar_action", {0, 60, 3}, {0, 0, 0});
+            CaptureShading("uar", 12);
+            LogMaterials(s_gun);
             s_step = 40; s_wait = 10;
             return;
         // ---- an optic from the station's menu, as a player picks one: where it mounts, the iron sights
@@ -137,6 +227,13 @@ static void Step() {
             Params at(optic, "AttachToServer");
             at.SetObj("Comp", rail);
             std::memcpy(at.Ptr("WorldTransform"), ct.Ptr("OutTransform"), 0x60);
+            if (!found) {  // headless: the middle of the top rail, as a hand would put it there
+                Params len(rail, "GetSplineLength");
+                len.Call();
+                Params tx(rail, "GetTransformAtDistanceAlongSpline");
+                tx.Set("Distance", len.Return<float>() * 0.5f).Set("CoordinateSpace", (uint8_t)1).Set("bUseScale", false).Call();
+                std::memcpy(at.Ptr("WorldTransform"), tx.Ptr("ReturnValue"), 0x60);
+            }
             at.Call();
             Log("OPTIC {} spawned, closest rail spot found {}, AttachToServer on {}", optic.Name(), found, rail.Name());
             s_step = 42; s_wait = 120;
@@ -156,6 +253,12 @@ static void Step() {
             auto parts = Components(s_gun, "DynamicMeshComponent");
             Log("OPTIC iron sights visible: {}", parts.size() > 2 ? Visible(parts[2]) : false);
             CaptureGun("uar_optic", 12);
+            CountOptics(s_gun, "mounted, 2 s later");
+            s_step = 43; s_wait = 300;
+            return;
+        }
+        case 43: {
+            CountOptics(s_gun, "after 5 s more of the plugin watching it");
             s_step = 14; s_wait = 10;
             return;
         }
@@ -231,6 +334,8 @@ static void Step() {
         case 22: {
             Object pg = s_gear.GetObj("PrimaryGun");
             Log("LOADOUT PrimaryGun after load: {} class {} - UAR-15 meshes {}", pg.Name(), ClassName(pg), Components(pg, "DynamicMeshComponent").size());
+            int optics = CountOptics(pg, "loadout gun rebuilt");
+            Log("LOADOUT optic count on the rebuilt UAR-15: {} -> {}", optics, optics == 1 ? "PASS (one, as saved)" : "FAIL");
             s_uarActor = s_gun;
             s_step = 23;
             return;

@@ -34,6 +34,8 @@ static Object s_target;  // the entry being spawned
 static Vec s_holdAt{};
 static bool s_holding = false;
 static int s_rounds = 0;  // rounds that began play since the last reset
+static uint8_t s_capSource = 7;  // ESceneCaptureSource: 7 base colour, 6 world normal, 2 final colour (lit)
+static Object s_light;
 
 static std::string TextOf(Object o, const char* prop) {
     char b[128] = "";
@@ -154,7 +156,7 @@ static void CaptureFrom(const std::string& file, Vec from, Vec at) {
     look.Set("Start", f).Set("Target", t).Call();
     Params mv(Object(API->GetOuter(s_cap.ptr)), "K2_SetActorLocationAndRotation");
     mv.Set("NewLocation", f).Set("NewRotation", look.Return<Rot>()).Set("bSweep", false).Set("bTeleport", true).Call();
-    s_cap.Set("CaptureSource", (uint8_t)7);  // SCS_BaseColor
+    s_cap.Set("CaptureSource", s_capSource);  // SCS_BaseColor unless a step asks for normals or the lit scene
     Params cs(s_cap, "CaptureScene");
     cs.Call();
     Params ex(Lib("KismetRenderingLibrary"), "ExportRenderTarget");

@@ -123,19 +123,25 @@ static constexpr int kNumParts = (int)std::size(kParts);
 // The UAR-15's own moving parts: each follows one of the M4's movables bones.
 enum class Motion { Slide, Turn };  // the bone's translation, or its rotation about the UAR-15's pivot
 struct Vec3 { double x, y, z; };
-struct MovingPart { const char* asset; const char* bone; Motion motion; Vec3 pivot; GUObject* mesh; };
+// flip: the part's rest pose is turned 180 degrees about the gun's Y axis (through its pivot) before it follows the bone.
+struct MovingPart { const char* asset; const char* bone; Motion motion; Vec3 pivot; GUObject* mesh; bool flip = false; };
 // pivots: actor space, cm (tools\prep, fitted: the TP and SP nodes)
 static MovingPart s_movingParts[] = {
     {"uar_bolt", "RootBoltCarrierGroup", Motion::Slide, {}, nullptr},
     {"uar_charging", "RootChargingHandle", Motion::Slide, {}, nullptr},
     {"uar_magrelease", "RootMagRelease", Motion::Slide, {}, nullptr},
     {"uar_trigger", "RootTrigger", Motion::Turn, {-1.347, 0.005, -1.892}, nullptr},
-    {"uar_selector", "RootSelector", Motion::Turn, {-4.191, -1.292, -1.340}, nullptr},
+    {"uar_selector", "RootSelector", Motion::Turn, {-4.191, -1.292, -1.340}, nullptr, true},  // the M4's lever rests pointing back, the UAR-15's forward
 };
 static constexpr int kNumMoving = (int)std::size(s_movingParts);
 
 static bool s_ownMovingParts = true, s_fitAttachments = true;
-static float s_offset[3] = {0, 0, 0};  // cm, a nudge on top of the fit baked into the OBJs
+// The receiver fit (toolsprep) matches the UAR-15's upper to the M4 mesh, but the M4's interaction points (magazine
+// well, charging handle, pistol grip hand socket, selector pivot) all sit 1.0-1.1 cm behind the UAR-15's matching
+// parts: its magwell walls, charging handle latch and selector pivot measure +1.0, +1.1 and +1.09 cm. So the whole
+// model moves back along the bore by this much; the hands and the magazine then land on the UAR-15's own parts.
+static constexpr float kFitShiftX = -1.0f;
+static float s_offset[3] = {0, 0, 0};  // cm: kFitShiftX plus the player's nudge (config), on top of the OBJs' fit
 static GUObject* s_mesh = nullptr;        // runtime UDynamicMesh: receiver, barrel, handguard, stock, grip
 static GUObject* s_muzzleMesh = nullptr;  // the A2 flash hider (hidden while a muzzle device is mounted)
 static GUObject* s_sightsMesh = nullptr;  // the MBUS sights (hidden while an optic is on the top rail)
@@ -156,11 +162,18 @@ static bool BuildVisualAssets() {
     Object shader = LoadObject(kShader);
     if (!shader) { Error("weapon shader {} not found", kShader); return false; }
 
+    // Textures made at runtime (ImportBufferAsTexture2D) are always sRGB. A normal map read through sRGB decoding
+    // tilts every normal ~50 degrees, so the model (which has flat normals anyway) takes the engine's own flat
+    // normal map instead; tools\prep stores the ORM channels sRGB-encoded so they decode to the intended values.
+    Object flatNormal = LoadObject("/Engine/EngineMaterials/FlatNormal.FlatNormal");
+    if (!flatNormal) flatNormal = LoadObject("/Engine/EngineMaterials/DefaultNormal.DefaultNormal");
+    if (!flatNormal) Warn("no engine flat normal map - normals keep the shader default");
     std::vector<uint8_t> buf;
     for (int i = 0; i < kNumParts; i++) {
         s_mids[i] = API->CreateMaterialInstance(shader.ptr);
         if (!s_mids[i]) { Error("could not create a material instance for {}", kParts[i]); return false; }
-        for (const char* param : {"Diffuse", "Normal", "ORM"}) {
+        if (flatNormal) API->SetMaterialTexture(s_mids[i], "Normal", flatNormal.ptr);
+        for (const char* param : {"Diffuse", "ORM"}) {
             std::string res = std::string(kParts[i]) + "_" + param;
             GUObject* tex = Unpack(res.c_str(), buf) ? API->ImportTextureFromMemory(buf.data(), buf.size(), res.c_str()) : nullptr;
             payload::Wipe(buf);
@@ -417,6 +430,7 @@ static void PoseRig(Rig& r) {
             PosePart(r.part[i], {0, 0, 0, 1}, {0, 0, 0}, {now.t[0] - rest.t[0], now.t[1] - rest.t[1], now.t[2] - rest.t[2]});
         } else {
             Q d = Mul(Q{now.q[0], now.q[1], now.q[2], now.q[3]}, Conj(Q{rest.q[0], rest.q[1], rest.q[2], rest.q[3]}));
+            if (mp.flip) d = Mul(d, Q{0, 1, 0, 0});  // 180 degrees about Y first
             PosePart(r.part[i], d, Nudged(mp.pivot), {0, 0, 0});
         }
     }
@@ -938,7 +952,7 @@ GML_PLUGIN("com.remarrow.uar15", "UAR-15", UAR15_VERSION);
 
 GML_AWAKE() {
     Message(UAR15_MODEL_CREDIT);
-    s_offset[0] = Config.Bind("Visuals", "OffsetX", 0.0f, "cm, + = toward the muzzle (the model is fitted on the M4's receivers)").Value();
+    s_offset[0] = kFitShiftX + Config.Bind("Visuals", "OffsetX", 0.0f, "cm, + = toward the muzzle (on top of the plugin's own fit)").Value();
     s_offset[1] = Config.Bind("Visuals", "OffsetY", 0.0f, "cm, + = to the gun's right").Value();
     s_offset[2] = Config.Bind("Visuals", "OffsetZ", 0.0f, "cm, + = up").Value();
     s_fitAttachments = Config.Bind("Visuals", "FitAttachments", true, "Move the M4's muzzle point and stock butt onto the UAR-15's.").Value();
