@@ -604,9 +604,9 @@ static void WatchDressedGuns() {
 // stored as an object path, and rebuilds it from there at team-room start and in every operation. The UAR-15's
 // GunAsset is created at runtime, so its path only resolves in the session that wrote it. So once the game has
 // saved the UAR-15, the plugin re-saves that slot (with the game's own SaveGameToSlot) with the M4 donor as
-// GunAsset - same receiver and attachments - and keeps the file's hash in its config. A loadout gun whose slot
-// still holds exactly that file, or was saved with the UAR-15's colour name, is the UAR-15. Without the plugin
-// the slot simply loads as an M4.
+// GunAsset - same receiver and attachments. A loadout gun is the UAR-15 only if its slot was saved with the
+// UAR-15's colour name (a stock CQBR is saved under our runtime asset too, so that proves nothing). Without the
+// plugin the slot simply loads as an M4.
 
 static std::string FStr8(Object o, const char* prop) {
     char b[256] = "";
@@ -690,16 +690,13 @@ static SavedGun SavedGunSetup(Object gear, const char* slotProp) {
     return {f ? *f : nullptr, SavedWithMarker(save)};
 }
 
-// SaveGunSetup names a gun by the first GunAsset in AvailableGuns with the receiver's class, so a UAR-15 is
-// normally saved as the M4 donor, with the UAR-15's colour name; one saved as our runtime asset (this session)
-// or recorded by its hash (re-saved by the plugin) is the UAR-15 too.
-static bool IsUarSlot(const std::string& slot, SavedGun saved) {
-    if (saved.asset && saved.asset == s_gun) return true;  // written this session, not re-saved yet
+// SaveGunSetup names a gun by a GunAsset in AvailableGuns with the receiver's class, and the M4 CQBR and the
+// UAR-15 share one: a stock CQBR is saved as our runtime asset too (seen in game). So the GunAsset says nothing;
+// only the UAR-15's colour name, which every UAR-15 carries and SaveGunSetup keeps, marks a UAR-15 slot.
+static bool IsUarSlot(const std::string&, SavedGun saved) {
+    if (!saved.asset || !saved.marked) return false;
     Object donor = FindObject(kDonor);
-    if (!saved.asset || saved.asset != donor.ptr) return false;
-    if (saved.marked) return true;
-    std::string h = RecordedHash(slot);
-    return !h.empty() && h == HashHex(ReadFileBytes(SaveGamesDir() + Widen8(slot.c_str()) + L".sav"));
+    return saved.asset == s_gun || saved.asset == donor.ptr;
 }
 
 // Re-save any gun slot the game wrote with the UAR-15 (or, from an earlier session, with a runtime GunAsset path
@@ -734,6 +731,9 @@ static void WatchLoadouts() {
         size_t t = raw.find("/Engine/Transient.");
         bool staleRuntime = !*asset && t != std::string::npos && raw.find(".GunAsset_C_", t) != std::string::npos;
         bool staleUar = staleRuntime && !RecordedHash(slot).empty();
+        bool marked = SavedWithMarker(save);
+        // Our runtime asset in the file: a UAR-15 if it carries the colour name, else a stock CQBR saved under the
+        // shared receiver. Either way re-save it with the donor so the slot still loads next session.
         if (*asset == s_gun || staleUar) {
             Object donor = FindObject(kDonor);
             if (!donor) continue;
@@ -741,13 +741,13 @@ static void WatchLoadouts() {
             Params sv(Lib("GameplayStatics"), "SaveGameToSlot");
             sv.SetObj("SaveGameObject", save).SetString("SlotName", stemW).Set("UserIndex", (int32_t)0).Call();
             if (!sv.Return<bool>()) { Error("could not re-save loadout slot {}", slot); continue; }
-            std::string hash = HashHex(ReadFileBytes(dir + file));
-            RecordHash(slot, hash);
+            RecordHash(slot, marked ? HashHex(ReadFileBytes(dir + file)) : std::string());
             WIN32_FILE_ATTRIBUTE_DATA a;
             if (GetFileAttributesExW((dir + file).c_str(), GetFileExInfoStandard, &a))
                 seen[file] = ((uint64_t)a.ftLastWriteTime.dwHighDateTime << 32) | a.ftLastWriteTime.dwLowDateTime;
-            Log("loadout slot {} holds the UAR-15: re-saved with a stable reference{}", slot, staleUar ? " (repaired a save from an earlier session)" : "");
-        } else if (!RecordedHash(slot).empty() && !IsUarSlot(slot, {*asset, SavedWithMarker(save)})) {
+            Log("loadout slot {} holds {}: re-saved with a stable reference{}", slot, marked ? "the UAR-15" : "a stock M4 CQBR",
+                staleUar ? " (repaired a save from an earlier session)" : "");
+        } else if (!RecordedHash(slot).empty() && !IsUarSlot(slot, {*asset, marked})) {
             RecordHash(slot, "");  // the game saved a different gun there since
             Log("loadout slot {} no longer holds the UAR-15", slot);
         }

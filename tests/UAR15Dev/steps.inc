@@ -16,6 +16,12 @@ static void LogBones(const char* when) {
 }
 
 static int s_mode = 0;
+static Object s_uarActor;
+
+static std::string ColorName(Object receiver) {
+    Object cc = receiver ? receiver.GetObj("ColorComponent") : Object();
+    return cc ? NameStr(cc.Get<uint64_t>("ColorOption")) : std::string("-");
+}
 
 static void Step() {
     if (s_wait > 0) { s_wait--; return; }
@@ -225,6 +231,41 @@ static void Step() {
         case 22: {
             Object pg = s_gear.GetObj("PrimaryGun");
             Log("LOADOUT PrimaryGun after load: {} class {} - UAR-15 meshes {}", pg.Name(), ClassName(pg), Components(pg, "DynamicMeshComponent").size());
+            s_uarActor = s_gun;
+            s_step = 23;
+            return;
+        }
+        // ---- back to the stock M4 CQBR after the UAR-15: it must stay an M4, at the station and in the loadout
+        case 23:
+            OpenCategory(s_donor.Get<uint8_t>("Category"));
+            s_step = 24; s_wait = 30;
+            return;
+        case 24:
+            if (!Select(s_donor)) { s_step = 30; return; }
+            s_step = 25; s_wait = 240;
+            return;
+        case 25: {
+            Object cur = Spawned();
+            if (!cur) return;
+            s_gun = cur;
+            Log("CQBR spawned {} (same actor as the UAR-15: {}) colour '{}' - UAR-15 meshes {}", cur.Name(), cur.ptr == s_uarActor.ptr,
+                ColorName(cur), Components(cur, "DynamicMeshComponent").size());
+            Params sv(s_gear, "SaveGunSetup");
+            sv.SetObj("GunReceiver", s_gun).Call();
+            Log("CQBR saved to the loadout");
+            s_step = 26; s_wait = 180;
+            return;
+        }
+        case 26: {
+            Params ld(s_gear, "LoadGunSetups");
+            ld.Call();
+            s_step = 27; s_wait = 300;
+            return;
+        }
+        case 27: {
+            Object pg = s_gear.GetObj("PrimaryGun");
+            Log("CQBR LOADOUT PrimaryGun after load: {} colour '{}' - UAR-15 meshes {} -> {}", pg.Name(), ColorName(pg),
+                Components(pg, "DynamicMeshComponent").size(), Components(pg, "DynamicMeshComponent").empty() ? "PASS (an M4)" : "FAIL (dressed as the UAR-15)");
             s_step = 30;
             return;
         }

@@ -62,6 +62,14 @@ the run if the GML Manager has it off.
 - Not tried in VR or in a two-player session.
 - The model has colour maps only. Normals are flat, and roughness comes from the colour map's brightness.
 
+## Loadout fix (0.1.3)
+
+The game saves a stock M4A1 CQBR under the UAR-15's gun entry, because both guns share one receiver. 0.1.2 took
+that as a UAR-15, so a CQBR in your loadout spawned as a UAR-15 with the CQBR's attachments. Now only the UAR-15's
+colour name, which every UAR-15 carries into its save, marks a UAR-15 slot. A CQBR slot that 0.1.2 had taken over
+loads as a CQBR again. Verified in game: UAR-15 saved and reloaded as a UAR-15, then a CQBR saved over it and
+reloaded as a CQBR.
+
 ## Textures (0.1.1)
 
 The colour maps come from Arma and average only 0.6-1.9% linear brightness: near black in the game's lighting, made
