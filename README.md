@@ -85,7 +85,7 @@ In a lit room the UAR-15 looked silvery white from some angles and dark grey fro
 textures at runtime, and the engine always samples those as sRGB. The flat normal map then decoded as normals tilted
 about 50 degrees, and the roughness and metallic channels came out far lower than meant (roughness 0.55 read as 0.26).
 The result was a glossy surface lit from the wrong direction. The model now uses the engine's own flat normal map,
-and `toolsprep` stores the ORM channels sRGB-encoded so they decode to the intended values. Verified in game: the
+and `tools\prep` stores the ORM channels sRGB-encoded so they decode to the intended values. Verified in game: the
 material instances sample `/Engine/EngineMaterials/FlatNormal`, the base colour is unchanged (50 dB PSNR against
 0.1.3) and only the lit shading differs. The test harness now also takes lit captures under a point light.
 
