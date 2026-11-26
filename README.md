@@ -62,6 +62,22 @@ the run if the GML Manager has it off.
 - Not tried in VR or in a two-player session.
 - The model has colour maps only. Normals are flat, and roughness comes from the colour map's brightness.
 
+## Hand poses and size (0.1.5)
+
+- **Pistol grip:** the game's grip pose is made for the M4's A2 grip, and the UAR-15's BCM grip stands about
+  11 degrees more upright, so the fingers floated in front of it. Registering the M4's grip surface onto the UAR-15's
+  gives a 10.96 degree nose-up turn about the grip's hand socket plus 0.20 cm forward and 0.05 cm down. That cuts the
+  80th-percentile gap between the two grips from 1.29 cm to 0.39 cm. The UAR-15's grip socket now carries that
+  transform.
+- **Handguard:** the UAR-15's keymod handguard is about 2 cm narrower than the M4's quad rail (3.7 vs 5.6 cm) and
+  sits 1 cm lower. The left hand's placement on its socket moves 1.03 cm in and 0.35 cm up. The game mirrors that
+  placement for the other hand, so it fits either hand. The fingers also curl 12 degrees more at their middle and tip
+  joints, to reach the far side.
+- All six values are in the `[Hands]` section of `com.remarrow.uar15.cfg`, to tune in a headset.
+- **Size:** the model is drawn 0.1% larger (`kFitScale`); the muzzle and stock points scale with it.
+- Verified in game that the sockets carry the new values and the stock M4's don't. A headless run can't render the
+  player's hands on the gun, because the body doesn't follow the controllers without a headset. **Not yet checked in VR.**
+
 ## Fit, selector and shading fixes (0.1.4)
 
 From a VR player's report:

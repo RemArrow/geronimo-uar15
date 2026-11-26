@@ -102,6 +102,164 @@ static int CountOptics(Object gun, const char* when) {
     return n;
 }
 
+
+// ---- the player's own hands on the gun: the right hand slot-grips the pistol grip socket (as the game does), the
+// left takes the handguard socket as the secondary grip. Logs every finger joint in the gun's frame and renders them.
+struct XfD { double q[4]; double t[3]; double pad0; double s[3]; double pad1; };
+static Object s_rightCtrl, s_leftCtrl, s_handSockR, s_handSockL;
+static XfD s_rightAt{}, s_leftAt{};
+static bool s_holdHands = false;
+static std::string s_handTag;
+static int s_afterHands = 0;
+
+static XfD XfOf(Object o) {
+    Params p(o, o.IsA("Actor") ? "GetTransform" : "K2_GetComponentToWorld");
+    p.Call();
+    XfD x;
+    std::memcpy(&x, p.Ptr("ReturnValue"), sizeof x);
+    return x;
+}
+static Vec XfPoint(const XfD& x, Vec local) {
+    Params f(Lib("KismetMathLibrary"), "TransformLocation");
+    std::memcpy(f.Ptr("T"), &x, sizeof x);
+    f.Set("Location", local).Call();
+    return f.Return<Vec>();
+}
+static Vec XfLocal(const XfD& x, Vec world) {
+    Params f(Lib("KismetMathLibrary"), "InverseTransformLocation");
+    std::memcpy(f.Ptr("T"), &x, sizeof x);
+    f.Set("Location", world).Call();
+    return f.Return<Vec>();
+}
+static Object Socket(Object gun, const char* prefix) {
+    for (auto& c : Components(gun, "SceneComponent"))
+        if (c.Name().rfind(prefix, 0) == 0) return c;
+    return {};
+}
+static XfD HandSocketWorld(Object sock, Object ctrl) {
+    Params hs(sock, "GetHandSocketTransform");
+    hs.SetObj("QueryController", ctrl).Set("bIgnoreOnlySnapMesh", false).Call();
+    XfD x;
+    std::memcpy(&x, hs.Ptr("ReturnValue"), sizeof x);
+    return x;
+}
+static void HoldHands() {
+    if (!s_holdHands) return;
+    for (auto [c, x] : {std::pair{s_rightCtrl, &s_rightAt}, std::pair{s_leftCtrl, &s_leftAt}}) {
+        if (!c) continue;
+        Params mv(c, "K2_SetWorldTransform");
+        std::memcpy(mv.Ptr("NewTransform"), x, sizeof(XfD));
+        mv.Set("bSweep", false).Set("bTeleport", true).Call();
+    }
+}
+static void LogSocket(Object sock, const char* which) {
+    if (!sock) { Log("HANDS {} socket missing", which); return; }
+    Vec l = sock.Get<Vec>("RelativeLocation");
+    Rot r = sock.Get<Rot>("RelativeRotation");
+    std::string deltas;
+    if (auto* d = (GML_TArray*)sock.PropPtr("CustomPoseDeltas"))
+        for (int i = 0; i < d->Num; i++) {
+            auto* e = (uint8_t*)d->Data + i * 0x40;
+            double* q = (double*)(e + 0x10);
+            deltas += std::format(" {}=({:.3f},{:.3f},{:.3f},{:.3f})", NameStr(*(uint64_t*)e), q[0], q[1], q[2], q[3]);
+        }
+    {
+        std::string flags;
+        for (const char* b : {"bUseCustomPoseDeltas", "bFlipForLeftHand", "bOnlyFlipRotation", "bLeftHandDominant", "bDecoupleMeshPlacement", "bMatchRotation", "bAlwaysInRange", "bDisabled"})
+            if (API->FindProperty(sock.Struct(), b)) flags += std::format(" {}={}", b, sock.GetBool(b));
+        for (const char* b : {"MirrorAxis", "FlipAxis"})
+            if (API->FindProperty(sock.Struct(), b)) flags += std::format(" {}={}", b, (int)sock.Get<uint8_t>(b));
+        if (auto* hp = (double*)sock.PropPtr("HandRelativePlacement"))
+            flags += std::format(" HandRelativePlacement q({:.3f},{:.3f},{:.3f},{:.3f}) t({:.3f},{:.3f},{:.3f}) s({:.2f},{:.2f},{:.2f})", hp[0], hp[1], hp[2], hp[3], hp[4], hp[5], hp[6], hp[8], hp[9], hp[10]);
+        Log("HANDS [{}] {} flags{}", s_handTag, which, flags);
+    }
+    Object anim = sock.GetObj("HandTargetAnimation");
+    Log("HANDS [{}] {} {} [{}] rel ({:.3f},{:.3f},{:.3f}) rot ({:.2f},{:.2f},{:.2f}) anim {} deltas{}", s_handTag, which, sock.Name(), ClassName(sock),
+        l.x, l.y, l.z, r.pitch, r.yaw, r.roll, anim.Name(), deltas);
+}
+static void LogFingers(const char* when) {
+    Object mesh = Pawn().GetObj("Mesh");
+    XfD g = XfOf(s_gun);
+    std::string out;
+    for (const char* side : {"r", "l"}) {
+        for (const char* f : {"hand", "thumb_01", "thumb_02", "thumb_03", "index_01", "index_02", "index_03", "middle_01", "middle_02", "middle_03",
+                              "ring_01", "ring_02", "ring_03", "pinky_01", "pinky_02", "pinky_03"}) {
+            std::string bone = std::format("{}_{}", f, side);
+            Params gl(mesh, "GetSocketLocation");
+            *(uint64_t*)gl.Ptr("InSocketName") = API->MakeName(bone.c_str());
+            gl.Call();
+            Vec l = XfLocal(g, gl.Return<Vec>());
+            out += std::format(" {}=({:.2f},{:.2f},{:.2f})", bone, l.x, l.y, l.z);
+        }
+    }
+    Log("FINGERS [{} {}]{}", s_handTag, when, out);
+}
+// From and to, in the gun's own frame; the gun, its magazine and the player's body.
+static void CaptureHands(const std::string& file, Vec from, Vec at) {
+    EnsureCapture();
+    s_cap.Set<uint8_t>("PrimitiveRenderMode", 2);
+    if (auto* only = (GML_TArray*)s_cap.PropPtr("ShowOnlyActors")) {
+        only->Num = 0;
+        for (Object a : {s_gun, s_gun.GetObj("CurrentMagazine"), Pawn()})
+            if (a) *(GUObject**)API->ArrayAdd(only, sizeof(GUObject*), 1) = a.ptr;
+    }
+    XfD g = XfOf(s_gun);
+    Vec f = XfPoint(g, from), t = XfPoint(g, at);
+    Params look(Lib("KismetMathLibrary"), "FindLookAtRotation");
+    look.Set("Start", f).Set("Target", t).Call();
+    Params mv(Object(API->GetOuter(s_cap.ptr)), "K2_SetActorLocationAndRotation");
+    mv.Set("NewLocation", f).Set("NewRotation", look.Return<Rot>()).Set("bSweep", false).Set("bTeleport", true).Call();
+    s_cap.Set("CaptureSource", (uint8_t)7);
+    Params cs(s_cap, "CaptureScene");
+    cs.Call();
+    Params ex(Lib("KismetRenderingLibrary"), "ExportRenderTarget");
+    ex.SetObj("WorldContextObject", Object(API->WorldContext())).SetObj("TextureRenderTarget", s_rt)
+        .SetString("FilePath", W(s_shotDir)).SetString("Filename", W(file + ".png")).Call();
+}
+
+// A slot grip as the game's: the socket onto the controller (the gun comes to the controller).
+static bool SlotGripWith(Object ctrl, Object sock) {
+    XfD hs = HandSocketWorld(sock, ctrl), gt = XfOf(s_gun);
+    Params rel(Lib("KismetMathLibrary"), "MakeRelativeTransform");
+    std::memcpy(rel.Ptr("A"), &gt, sizeof gt);
+    std::memcpy(rel.Ptr("RelativeTo"), &hs, sizeof hs);
+    rel.Call();
+    Params g(ctrl, "GripObjectByInterface");
+    g.SetObj("ObjectToGrip", s_gun);
+    std::memcpy(g.Ptr("WorldOffset"), rel.Ptr("ReturnValue"), sizeof(XfD));
+    *(uint64_t*)g.Ptr("OptionalSnapToSocketName") = API->MakeName(sock.Name().c_str());
+    g.Set("bWorldOffsetIsRelative", true).Set("bIsSlotGrip", true).Call();
+    bool ok = g.Return<bool>();
+    Log("HANDS [{}] {} slot grip on {}: {}", s_handTag, ctrl.Name(), sock.Name(), ok);
+    return ok;
+}
+// Headless, the body's hands don't follow the controllers, but they take the grip's finger pose. So the controller
+// (and the gun gripped to it) goes where the game would put it for the hand where it is: the socket sits at the hand
+// bone composed with the inverse of the socket's HandRelativePlacement (the hand relative to the socket).
+static int s_follow = 0;  // 0 none, 1 right hand / grip socket, 2 left hand / handguard socket
+static void FollowHand() {
+    if (!s_follow || !s_gun) return;
+    Object ctrl = s_follow == 1 ? s_rightCtrl : s_leftCtrl, sock = s_follow == 1 ? s_handSockR : s_handSockL;
+    Object mesh = Pawn().GetObj("Mesh");
+    Params gt(mesh, "GetSocketTransform");
+    *(uint64_t*)gt.Ptr("InSocketName") = API->MakeName(s_follow == 1 ? "hand_r" : "hand_l");
+    gt.Set("TransformSpace", (uint8_t)0).Call();  // RTS_World
+    XfD hand;
+    std::memcpy(&hand, gt.Ptr("ReturnValue"), sizeof hand);
+    XfD hrp;
+    std::memcpy(&hrp, sock.PropPtr("HandRelativePlacement"), sizeof hrp);
+    Params inv(Lib("KismetMathLibrary"), "InvertTransform");
+    std::memcpy(inv.Ptr("T"), &hrp, sizeof hrp);
+    inv.Call();
+    Params c(Lib("KismetMathLibrary"), "ComposeTransforms");
+    std::memcpy(c.Ptr("A"), inv.Ptr("ReturnValue"), sizeof(XfD));
+    std::memcpy(c.Ptr("B"), &hand, sizeof hand);
+    c.Call();
+    Params mv(ctrl, "K2_SetWorldTransform");
+    std::memcpy(mv.Ptr("NewTransform"), c.Ptr("ReturnValue"), sizeof(XfD));
+    mv.Set("bSweep", false).Set("bTeleport", true).Call();
+}
+
 static int s_mode = 0;
 static Object s_uarActor;
 
@@ -160,8 +318,8 @@ static void Step() {
             LogBones("stock M4 at rest");
             CaptureGun("m4", 8);
             CaptureShading("m4", 8);
-            s_holding = false;
-            s_step = 10;
+            s_handTag = "m4"; s_afterHands = 10;
+            s_step = 70;
             return;
         // ---- the UAR-15
         case 10:
@@ -192,8 +350,19 @@ static void Step() {
             CaptureFrom("uar_action", {0, 60, 3}, {0, 0, 0});
             CaptureShading("uar", 12);
             LogMaterials(s_gun);
-            s_step = 40; s_wait = 10;
+            s_handTag = "uar"; s_afterHands = 40;
+            s_step = 70;
             return;
+        // ---- hands on the gun (s_handTag), then on to s_afterHands
+        case 70: {  // the hand sockets as the game uses them (headless, the body's hands don't follow the controllers, so they
+                    // can't be rendered on the gun; the sockets show what the plugin changed against the stock M4)
+            s_handSockR = Socket(s_gun, "PrimaryHandSocket");
+            s_handSockL = Socket(s_gun, "SecondaryHandSocket");
+            LogSocket(s_handSockR, "grip");
+            LogSocket(s_handSockL, "handguard");
+            s_step = s_afterHands;
+            return;
+        }
         // ---- an optic from the station's menu, as a player picks one: where it mounts, the iron sights
         // The station's optics menu lists nothing without a headset: the optic is mounted the way the attachment itself
         // does it when a hand puts it on a rail (closest rail spot, then AttachToServer onto the top rail's spline).
@@ -402,6 +571,8 @@ GML_AWAKE() {
     On(GML_EVENT_TICK, [](void*) {
         if (s_step >= 0 && s_step < 99) Step();
         Hold();
+        HoldHands();
+        FollowHand();
     });
     HookAfter("CustomizationStation_Gun_C:ReceiveTick", [](Object, GUFunction*, void*) { Hold(); });
     return 0;

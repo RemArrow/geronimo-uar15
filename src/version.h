@@ -2,8 +2,8 @@
 // resource (UAR15.rc).
 #pragma once
 
-#define UAR15_VERSION_NUM 0, 1, 4, 0
-#define UAR15_VERSION "0.1.4"
+#define UAR15_VERSION_NUM 0, 1, 5, 0
+#define UAR15_VERSION "0.1.5"
 
 #define UAR15_MODEL_CREDIT                                                                    \
     "3D model and textures: UAR-15 from the BONELAB Cold Weapon Pack by Bonewar, "             \

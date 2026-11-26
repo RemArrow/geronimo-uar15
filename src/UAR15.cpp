@@ -141,6 +141,9 @@ static bool s_ownMovingParts = true, s_fitAttachments = true;
 // parts: its magwell walls, charging handle latch and selector pivot measure +1.0, +1.1 and +1.09 cm. So the whole
 // model moves back along the bore by this much; the hands and the magazine then land on the UAR-15's own parts.
 static constexpr float kFitShiftX = -1.0f;
+// The whole model is drawn 0.1% larger than the export (scaled about the gun's origin, before the shift): the
+// player's call, after holding it next to the game's own AR-15s.
+static constexpr float kFitScale = 1.001f;
 static float s_offset[3] = {0, 0, 0};  // cm: kFitShiftX plus the player's nudge (config), on top of the OBJs' fit
 static GUObject* s_mesh = nullptr;        // runtime UDynamicMesh: receiver, barrel, handguard, stock, grip
 static GUObject* s_muzzleMesh = nullptr;  // the A2 flash hider (hidden while a muzzle device is mounted)
@@ -185,6 +188,7 @@ static bool BuildVisualAssets() {
     GML_MeshImport o{};
     o.size = sizeof o;
     o.axis = GML_AXIS_UNREAL;  // tools\prep writes the game's space, cm, fitted
+    o.scale = kFitScale;
     std::memcpy(o.offset, s_offset, sizeof s_offset);
     o.flipWinding = -1;
     o.materialCount = kNumParts;
@@ -266,7 +270,9 @@ static const AttachPoint kAttachPoints[] = {
     {"DefaultStockButtPosition", -30.83, 0, -7.07, {-36.231, 0, -7.070}},      // behind the bottom of the butt pad, as the M4's
 };
 
-static Vec3 AttachTarget(const AttachPoint& p) { return {p.x + s_offset[0], p.y + s_offset[1], p.z + s_offset[2]}; }
+// A point of the model (the OBJs' space) where it is drawn: scaled about the origin, then shifted.
+static Vec3 Fitted(double x, double y, double z) { return {x * kFitScale + s_offset[0], y * kFitScale + s_offset[1], z * kFitScale + s_offset[2]}; }
+static Vec3 AttachTarget(const AttachPoint& p) { return Fitted(p.x, p.y, p.z); }
 
 struct ActorFrame {
     Params gt;
@@ -402,7 +408,7 @@ static void PosePart(GUObject* part, Q q, Vec3 pivot, Vec3 move) {
     p.Set("bSweep", false).Set("bTeleport", true).Call();
 }
 
-static Vec3 Nudged(Vec3 p) { return {p.x + s_offset[0], p.y + s_offset[1], p.z + s_offset[2]}; }
+static Vec3 Nudged(Vec3 p) { return Fitted(p.x, p.y, p.z); }
 
 struct Rig {
     GUObject* gun;
@@ -485,6 +491,69 @@ static std::vector<DressedGun> s_dressedGuns;
 
 static void Mark(Object receiver);
 
+// ------------------------------------------------------------------ hand poses
+//
+// The game's grip and handguard hand poses are authored for the M4's A2 pistol grip and quad rail. The UAR-15's BCM
+// grip stands 11 degrees more upright, and its keymod handguard is 2 cm narrower and 1 cm deeper, so the fingers
+// floated. Measured on the meshes (the M4's grip registered onto the UAR-15's: 80th-percentile gap 1.29 -> 0.39 cm):
+//  - grip: the hand socket turns 10.96 degrees nose-up about itself and moves 0.20 cm forward, 0.05 cm down;
+//  - handguard: the hand (its placement relative to the socket, which the game mirrors for the other hand) moves
+//    1.03 cm in, onto the narrower side, and 0.35 cm up for the taller top; the fingers curl 12 degrees more at their
+//    middle and tip joints to reach the far side.
+// Each is a setting, to tune in a headset.
+static float s_gripPitch = 10.96f, s_gripX = 0.20f, s_gripZ = -0.05f;
+static float s_guardIn = 1.03f, s_guardUp = 0.35f, s_guardCurl = 12.0f;
+
+struct PoseRaw { uint64_t bone, pad; double q[4]; uint8_t rest[0x10]; };  // FBPVRHandPoseBonePair
+static_assert(sizeof(PoseRaw) == 0x40);
+
+static Object FindSocket(Object actor, const char* prefix) {
+    Params gc(actor, "K2_GetComponentsByClass");
+    gc.Set("ComponentClass", FindClass("SceneComponent")).Call();
+    auto* arr = (GML_TArray*)gc.Ptr("ReturnValue");
+    for (int i = 0; arr && i < arr->Num; i++) {
+        Object c(((GUObject**)arr->Data)[i]);
+        if (c.Name().rfind(prefix, 0) == 0) return c;
+    }
+    return {};
+}
+
+static void FitHandPoses(Object actor) {
+    int done = 0;
+    if (Object grip = FindSocket(actor, "PrimaryHandSocket")) {
+        Vec3 l = grip.Get<Vec3>("RelativeLocation");
+        struct { double pitch, yaw, roll; } r = grip.Get<decltype(r)>("RelativeRotation");
+        Params s(grip, "K2_SetRelativeLocationAndRotation");
+        s.Set("NewLocation", Vec3{l.x + s_gripX, l.y, l.z + s_gripZ}).Set("NewRotation", decltype(r){r.pitch + s_gripPitch, r.yaw, r.roll})
+            .Set("bSweep", false).Set("bTeleport", true).Call();
+        done++;
+    }
+    if (Object guard = FindSocket(actor, "SecondaryHandSocket")) {
+        if (auto* hrp = (double*)guard.PropPtr("HandRelativePlacement")) {
+            hrp[5] += s_guardIn;  // translation y: the hand sits on the -Y (left) side, so + is in toward the handguard
+            hrp[6] += s_guardUp;
+        }
+        GFProperty* dp = API->FindProperty(guard.Struct(), "CustomPoseDeltas");
+        GML_PropInfo ai{}, ei{};
+        auto* d = (GML_TArray*)guard.PropPtr("CustomPoseDeltas");
+        if (d && dp && API->GetPropertyInfo(dp, &ai) && ai.inner && API->GetPropertyInfo(ai.inner, &ei) && ei.size == (int)sizeof(PoseRaw)) {
+            double h = -s_guardCurl * 3.14159265358979 / 360;  // curl = about the bone's -Z
+            Q c{0, 0, std::sin(h), std::cos(h)};
+            for (int i = 0; i < d->Num; i++) {
+                auto& e = ((PoseRaw*)d->Data)[i];
+                char b[64] = "";
+                API->NameToString(e.bone, b, sizeof b);
+                std::string n = b;
+                if (n.rfind("thumb", 0) == 0 || (n.find("_02_") == std::string::npos && n.find("_03_") == std::string::npos)) continue;
+                Q q = Mul(Q{e.q[0], e.q[1], e.q[2], e.q[3]}, c);
+                e.q[0] = q.x; e.q[1] = q.y; e.q[2] = q.z; e.q[3] = q.w;
+            }
+        }
+        done++;
+    }
+    if (done < 2) Warn("{}: found {} of 2 hand sockets - the hand poses stay the M4's", actor.Name(), done);
+}
+
 static void DressAsUar(Object actor) {
     if (IsDressed(actor)) return;
     if (!BuildVisualAssets()) return;
@@ -497,6 +566,7 @@ static void DressAsUar(Object actor) {
     HideComponent(root);
     if (s_ownMovingParts) HangMovingParts(actor);
     if (s_fitAttachments) FitAttachPoints(actor);
+    FitHandPoses(actor);
     s_dressedGuns.push_back({actor.ptr, muzzle.ptr, sights.ptr});
     Log("*** {} dressed as a UAR-15 ***", actor.Name());
 }
@@ -957,6 +1027,12 @@ GML_AWAKE() {
     s_offset[2] = Config.Bind("Visuals", "OffsetZ", 0.0f, "cm, + = up").Value();
     s_fitAttachments = Config.Bind("Visuals", "FitAttachments", true, "Move the M4's muzzle point and stock butt onto the UAR-15's.").Value();
     s_ownMovingParts = Config.Bind("Visuals", "OwnMovingParts", true, "The UAR-15's own bolt carrier, charging handle, trigger, selector and mag release.").Value();
+    s_gripPitch = Config.Bind("Hands", "GripPitch", s_gripPitch, "degrees the pistol-grip hand turns nose-up from the M4's pose (the BCM grip is more upright)").Value();
+    s_gripX = Config.Bind("Hands", "GripX", s_gripX, "cm the pistol-grip hand moves forward").Value();
+    s_gripZ = Config.Bind("Hands", "GripZ", s_gripZ, "cm the pistol-grip hand moves up").Value();
+    s_guardIn = Config.Bind("Hands", "HandguardIn", s_guardIn, "cm the handguard hand moves in toward the (narrower) handguard").Value();
+    s_guardUp = Config.Bind("Hands", "HandguardUp", s_guardUp, "cm the handguard hand moves up").Value();
+    s_guardCurl = Config.Bind("Hands", "HandguardCurl", s_guardCurl, "degrees more curl at the handguard fingers' middle and tip joints").Value();
 
     HookAfter("BP_GameInstance_C:GetItems", [](Object gi, GUFunction*, void*) { AddGun(gi); });
     On(GML_EVENT_WORLD_BEGIN_PLAY, [](void*) {
